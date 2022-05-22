@@ -16,6 +16,19 @@
  */
 package org.apache.catalina.loader;
 
+import org.apache.catalina.*;
+import org.apache.catalina.webresources.TomcatURLStreamHandlerFactory;
+import org.apache.juli.WebappProperties;
+import org.apache.juli.logging.Log;
+import org.apache.juli.logging.LogFactory;
+import org.apache.tomcat.InstrumentableClassLoader;
+import org.apache.tomcat.util.ExceptionUtils;
+import org.apache.tomcat.util.IntrospectionUtils;
+import org.apache.tomcat.util.compat.JreCompat;
+import org.apache.tomcat.util.res.StringManager;
+import org.apache.tomcat.util.security.PermissionCheck;
+import org.apache.tomcat.util.threads.ThreadPoolExecutor;
+
 import java.io.File;
 import java.io.FilePermission;
 import java.io.IOException;
@@ -29,54 +42,15 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.security.AccessControlException;
-import java.security.AccessController;
-import java.security.CodeSource;
-import java.security.Permission;
-import java.security.PermissionCollection;
-import java.security.Policy;
-import java.security.PrivilegedAction;
-import java.security.ProtectionDomain;
+import java.security.*;
 import java.security.cert.Certificate;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.ConcurrentModificationException;
-import java.util.Date;
-import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.NoSuchElementException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.jar.Attributes;
 import java.util.jar.Attributes.Name;
 import java.util.jar.Manifest;
-
-import org.apache.catalina.Container;
-import org.apache.catalina.Globals;
-import org.apache.catalina.Lifecycle;
-import org.apache.catalina.LifecycleException;
-import org.apache.catalina.LifecycleListener;
-import org.apache.catalina.LifecycleState;
-import org.apache.catalina.WebResource;
-import org.apache.catalina.WebResourceRoot;
-import org.apache.catalina.webresources.TomcatURLStreamHandlerFactory;
-import org.apache.juli.WebappProperties;
-import org.apache.juli.logging.Log;
-import org.apache.juli.logging.LogFactory;
-import org.apache.tomcat.InstrumentableClassLoader;
-import org.apache.tomcat.util.ExceptionUtils;
-import org.apache.tomcat.util.IntrospectionUtils;
-import org.apache.tomcat.util.compat.JreCompat;
-import org.apache.tomcat.util.res.StringManager;
-import org.apache.tomcat.util.security.PermissionCheck;
-import org.apache.tomcat.util.threads.ThreadPoolExecutor;
 
 /**
  * Specialized web application class loader.
@@ -1267,7 +1241,8 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
             checkStateForClassLoading(name);
 
             // (0) Check our previously loaded local class cache
-            clazz = findLoadedClass0(name);
+            // 优先去map里面查询，提高效率
+            clazz = findLoadedClass0(name);//map
             if (clazz != null) {
                 if (log.isDebugEnabled()) {
                     log.debug("  Returning class from cache");
@@ -1279,7 +1254,8 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
             }
 
             // (0.1) Check our previously loaded class cache
-            clazz = findLoadedClass(name);
+            // map找不到，才去jvm里面进行加载
+            clazz = findLoadedClass(name);//jvm
             if (clazz != null) {
                 if (log.isDebugEnabled()) {
                     log.debug("  Returning class from cache");
@@ -1293,6 +1269,8 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
             // (0.2) Try loading the class with the bootstrap class loader, to prevent
             //       the webapp from overriding Java SE classes. This implements
             //       SRV.10.7.2
+            //
+            //com/giousa/Test.class 类似这样的格式
             String resourceName = binaryNameToPath(name, false);
 
             ClassLoader javaseLoader = getJavaseClassLoader();
@@ -1353,9 +1331,12 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
                 }
             }
 
+            //是否委托
             boolean delegateLoad = delegate || filter(name, true);
 
             // (1) Delegate to our parent if requested
+
+            //委托父类加载
             if (delegateLoad) {
                 if (log.isDebugEnabled()) {
                     log.debug("  Delegating to parent classloader1 " + parent);
@@ -1381,6 +1362,7 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
                 log.debug("  Searching local repositories");
             }
             try {
+                //自己的类加载器，也就是 WebappClassLoader
                 clazz = findClass(name);
                 if (clazz != null) {
                     if (log.isDebugEnabled()) {
@@ -1396,6 +1378,7 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
             }
 
             // (3) Delegate to parent unconditionally
+            //如果自定义的WebappClassLoad没有加载成功，无条件委托父类进行加载
             if (!delegateLoad) {
                 if (log.isDebugEnabled()) {
                     log.debug("  Delegating to parent classloader at end: " + parent);
@@ -2367,6 +2350,7 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
         if (name == null) {
             return null;
         }
+        //com/giousa/Test.class 类似这样的格式
         String path = binaryNameToPath(name, true);
 
         ResourceEntry entry = resourceEntries.get(path);
@@ -2492,6 +2476,7 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
             }
 
             try {
+                //生成class对象
                 clazz = defineClass(name, binaryContent, 0,
                         binaryContent.length, new CodeSource(codeBase, certificates));
             } catch (UnsupportedClassVersionError ucve) {
@@ -2567,6 +2552,7 @@ public abstract class WebappClassLoaderBase extends URLClassLoader
      */
     protected Class<?> findLoadedClass0(String name) {
 
+        //com/giousa/Test.class 类似这样的格式
         String path = binaryNameToPath(name, true);
 
         ResourceEntry entry = resourceEntries.get(path);
